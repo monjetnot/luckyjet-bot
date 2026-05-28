@@ -1,6 +1,5 @@
 import os
 import json
-import asyncio
 import logging
 import statistics
 from datetime import datetime
@@ -88,9 +87,21 @@ def analyse(history, last_n=30):
         "streak": streak, "derniere": round(cotes[-1], 2),
     }
 
-def rapport(s):
-    alerte = f"\n⚠️ *ALERTE* : {s['streak']} tours consécutifs < 2x !\n" if s["streak"] >= 4 else ""
+def signal_court(s):
+    """Message court envoyé automatiquement après chaque cote."""
+    alerte = "\n⚠️ *Série basse détectée !* Prudence." if s["streak"] >= 4 else ""
+    return (
+        f"🎯 *PROCHAIN TOUR*\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"✅ Mise sécuritaire : *{s['tranche']}x*\n"
+        f"📊 Confiance : {s['conf_label']} (*{s['conf_pct']}%*)\n"
+        f"📈 Fréquence ≥{s['tranche']}x : *{s['fr'].get(str(s['tranche'])+'x', 0)}%* récent\n"
+        f"🔢 Basé sur *{s['total']}* cotes{alerte}"
+    )
+
+def rapport_complet(s):
     fr, fg = s["fr"], s["fg"]
+    alerte = f"\n⚠️ *ALERTE* : {s['streak']} tours consécutifs < 2x !\n" if s["streak"] >= 4 else ""
     return (
         f"╔══════════════════════════╗\n"
         f"║  📊 *ANALYSE LUCKY JET*\n"
@@ -120,19 +131,20 @@ def rapport(s):
 # ── HANDLERS ────────────────────────────────────────────────────────────────
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     keyboard = [
-        [InlineKeyboardButton("📊 Analyse",    callback_data="analyse"),
-         InlineKeyboardButton("📜 Historique", callback_data="historique")],
-        [InlineKeyboardButton("🗑️ Effacer",    callback_data="clear")],
+        [InlineKeyboardButton("📊 Analyse complète", callback_data="analyse"),
+         InlineKeyboardButton("📜 Historique",        callback_data="historique")],
+        [InlineKeyboardButton("🗑️ Effacer",           callback_data="clear")],
     ]
     h = get_history(update.effective_user.id)
     await update.message.reply_text(
         f"🚀 *Bot Lucky Jet*\n\n"
         f"📌 *Comment utiliser :*\n"
-        f"• Tape juste la cote après chaque tour (ex: `2.35`)\n"
-        f"• `/analyse` → rapport + recommandation\n"
-        f"• `/history` → tes dernières cotes\n"
-        f"• `/clear` → effacer\n\n"
-        f"📦 Cotes enregistrées : *{len(h)}*",
+        f"• Tape la cote après chaque tour (ex: `2.35`)\n"
+        f"• Le bot t'envoie *automatiquement* la recommandation\n"
+        f"  pour le prochain tour !\n\n"
+        f"📦 Cotes enregistrées : *{len(h)}*\n"
+        f"_{MIN_COTES - len(h)} cotes de plus pour activer l'analyse_" if len(h) < MIN_COTES else
+        f"📦 Cotes enregistrées : *{len(h)}* ✅",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
@@ -141,13 +153,11 @@ async def cmd_analyse(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     h = get_history(update.effective_user.id)
     if len(h) < MIN_COTES:
         await update.message.reply_text(
-            f"⏳ Besoin de *{MIN_COTES} cotes minimum*.\n"
-            f"Tu en as *{len(h)}* — tape les cotes après chaque tour !",
+            f"⏳ Besoin de *{MIN_COTES} cotes minimum* ({len(h)} enregistrées).",
             parse_mode="Markdown"
         )
         return
-    s = analyse(h)
-    await update.message.reply_text(rapport(s), parse_mode="Markdown")
+    await update.message.reply_text(rapport_complet(analyse(h)), parse_mode="Markdown")
 
 async def cmd_history(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     h = get_history(update.effective_user.id)
@@ -157,17 +167,17 @@ async def cmd_history(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     last  = h[-15:]
     lines = [f"`{e['cote']:5}x`  {e['ts'][11:19]}" for e in reversed(last)]
     await update.message.reply_text(
-        f"📜 *{len(h)} cotes au total — 15 dernières :*\n" + "\n".join(lines),
+        f"📜 *{len(h)} cotes — 15 dernières :*\n" + "\n".join(lines),
         parse_mode="Markdown"
     )
 
 async def cmd_clear(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     keyboard = [[
-        InlineKeyboardButton("✅ Confirmer", callback_data="do_clear"),
-        InlineKeyboardButton("❌ Annuler",   callback_data="cancel")
+        InlineKeyboardButton("✅ Oui", callback_data="do_clear"),
+        InlineKeyboardButton("❌ Non", callback_data="cancel")
     ]]
     await update.message.reply_text(
-        "⚠️ Supprimer tout ton historique ?",
+        "⚠️ Supprimer tout l'historique ?",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -180,11 +190,11 @@ async def button_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         h = get_history(uid)
         if len(h) < MIN_COTES:
             await q.edit_message_text(
-                f"⏳ Besoin de *{MIN_COTES} cotes minimum* (tu en as {len(h)}).\nTape les cotes après chaque tour !",
+                f"⏳ Besoin de *{MIN_COTES} cotes* (tu en as {len(h)}).",
                 parse_mode="Markdown"
             )
         else:
-            await q.edit_message_text(rapport(analyse(h)), parse_mode="Markdown")
+            await q.edit_message_text(rapport_complet(analyse(h)), parse_mode="Markdown")
 
     elif q.data == "historique":
         h = get_history(uid)
@@ -200,8 +210,8 @@ async def button_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     elif q.data == "clear":
         keyboard = [[
-            InlineKeyboardButton("✅ Oui",  callback_data="do_clear"),
-            InlineKeyboardButton("❌ Non",  callback_data="cancel")
+            InlineKeyboardButton("✅ Oui", callback_data="do_clear"),
+            InlineKeyboardButton("❌ Non", callback_data="cancel")
         ]]
         await q.edit_message_text("⚠️ Confirmer ?", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -213,22 +223,34 @@ async def button_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("✅ Annulé.")
 
 async def message_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Reçoit une cote, l'enregistre et envoie automatiquement le signal."""
     text = update.message.text.strip().replace(",", ".")
     try:
         cote = float(text)
         if 1.0 <= cote <= 200:
             h = add_cote(update.effective_user.id, cote)
             n = len(h)
+
             if n < MIN_COTES:
-                msg = f"✅ *{cote}x* enregistré _(total : {n}/{MIN_COTES})_\n_{MIN_COTES - n} cotes de plus pour l'analyse_"
+                # Pas encore assez de données
+                await update.message.reply_text(
+                    f"✅ *{cote}x* enregistré — *{n}/{MIN_COTES}*\n"
+                    f"_{MIN_COTES - n} cotes de plus pour activer les signaux_",
+                    parse_mode="Markdown"
+                )
             else:
-                msg = f"✅ *{cote}x* enregistré _(total : {n})_ → /analyse"
-            await update.message.reply_text(msg, parse_mode="Markdown")
+                # ✅ Envoie le signal automatiquement pour le prochain tour
+                s = analyse(h)
+                await update.message.reply_text(
+                    f"✅ *{cote}x* enregistré _{n} total_\n\n"
+                    + signal_court(s),
+                    parse_mode="Markdown"
+                )
             return
     except ValueError:
         pass
     await update.message.reply_text(
-        "❓ Commande inconnue.\nTape une cote (ex: `2.35`) ou `/start`",
+        "❓ Tape une cote (ex: `2.35`) ou `/start`",
         parse_mode="Markdown"
     )
 
